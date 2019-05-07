@@ -1,2 +1,2 @@
-# FaceOSC
-integrate FaceOSC in open framework.
+# smallpt by CUDA
+

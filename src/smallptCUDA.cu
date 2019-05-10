@@ -83,14 +83,14 @@ __constant__ Sphere spheres[] = {
 // param i is the intersected sphere id.
 __device__ inline bool intersect_scene(const Ray &r, float &t, int &id)
 {
- float n = sizeof(spheres) / sizeof(Sphere), d, inf = t = 1e20;  
- for (int i = int(n); i--;)  // test all scene objects for intersection
-  if ((d = spheres[i].intersect_sphere(r)) && d<t) // if newly computed intersection distance d is smaller than current closest intersection distance
-  {  
-    t = d;  // keep track of distance along ray to closest intersection point 
-    id = i; // and closest intersected object
-  }
- return t < inf; // returns true if an intersection with the scene occurred, false when no hit
+	float n = sizeof(spheres) / sizeof(Sphere), d, inf = t = 1e20;  
+	for (int i = int(n); i--;)  // test all scene objects for intersection
+	if ((d = spheres[i].intersect_sphere(r)) && d<t) // if newly computed intersection distance d is smaller than current closest intersection distance
+	{  
+		t = d;  // keep track of distance along ray to closest intersection point 
+		id = i; // and closest intersected object
+	}
+	return t < inf; // returns true if an intersection with the scene occurred, false when no hit
 }
 
 // random number generator from https://github.com/gz/rust-raytracer
@@ -132,7 +132,9 @@ __device__ float3 radiance(Ray &r, unsigned int *s1, unsigned int *s2)
 
 // test ray for intersection with scene
   if (!intersect_scene(r, t, id))
+  {
    return make_float3(0.0f, 0.0f, 0.0f); // if miss, return black
+  }
 
   const Sphere &obj = spheres[id];  // hitobject
   float3 x = r.orig + r.dir*t;          // hitpoint 
@@ -174,48 +176,53 @@ __device__ float3 radiance(Ray &r, unsigned int *s1, unsigned int *s2)
 // __global__ : executed on the device (GPU) and callable only from host (CPU) 
 __global__ void render_kernel(float3 *output, int width, int height, int samps)
 {
-    // assign a CUDA thread to every pixel (x,y) 
     // blockIdx, blockDim and threadIdx are CUDA specific keywords
-    // replaces nested outer loops in CPU code looping over image rows and image columns 
     unsigned int x = blockIdx.x*blockDim.x + threadIdx.x;
     unsigned int y = blockIdx.y*blockDim.y + threadIdx.y;
 
-    unsigned int i = (height - y - 1) * width + x; // index of current pixel (calculated using thread index) 
+    unsigned int i = (height - 1 - y) * width + x; // index of current pixel (calculated using thread index) 
 
     unsigned int s1 = x;  // seeds for random number generator
     unsigned int s2 = y;
 
-    // generate ray directed at lower left corner of the screen
-    // compute directions for all other rays by adding cx and cy increments in x and y direction
-    Ray cam(make_float3(50, 52, 295.6), normalize(make_float3(0, -0.042612, -1))); // first hardcoded camera ray(origin, direction) 
-    float3 cx = make_float3(width * .5135 / height, 0.0f, 0.0f); // ray direction offset in x direction
-    float3 cy = normalize(cross(cx, cam.dir)) * .5135; // ray direction offset in y direction (.5135 is field of view angle)
+    Ray cam(make_float3(50, 52, 295.6), normalize(make_float3(0, -0.042612, -1)));
+    float3 cx = make_float3(width * .5135 / height, 0.0f, 0.0f);
+    float3 cy = normalize(cross(cx, cam.dir)) * .5135;
     float3 r = make_float3(0.0f);
 
-    // samples per pixel
-    for (int s = 0; s < samps; s++)
-	{  
-		// compute primary ray direction
-        float3 d = cam.dir + cx*((.25 + x) / width - .5) + cy*((.25 + y) / height - .5);
+	//// super sampling
+	for (int sy = 0; sy < 2; sy++)     // 2x2 subpixel rows
+		for (int sx = 0; sx < 2; sx++, r = make_float3(0.0f))			  // 2x2 subpixel cols
+		{
 
-        // create primary ray, add incoming radiance to pixelcolor
-        r = r + radiance(Ray(cam.orig + d * 40, normalize(d)), &s1, &s2)*(1. / samps);
-    }       // Camera rays are pushed ^^^^^ forward to start in interior 
+			for (int s = 0; s < samps; s++)
+			{  
+				// compute primary ray direction
+				//float3 d = cam.dir + cx*((.25 + x) / width - .5) + cy*((.25 + y) / height - .5);
+				double r1 = 2 * getrandom(&s1, &s2), dx = r1 < 1 ? sqrt(r1) - 1 : 1 - sqrt(2 - r1);
+				double r2 = 2 * getrandom(&s1, &s2), dy = r2 < 1 ? sqrt(r2) - 1 : 1 - sqrt(2 - r2);
+				float3 d = cx * (((sx + .5 + dx) / 2 + x) / width - .5) +
+					cy * (((sy + .5 + dy) / 2 + y) / height - .5) + cam.dir;
 
-    // write rgb value of pixel to image buffer on the GPU, clamp value to [0.0f, 1.0f] range
-    output[i] = make_float3(clamp(r.x, 0.0f, 1.0f), clamp(r.y, 0.0f, 1.0f), clamp(r.z, 0.0f, 1.0f));
+				// create primary ray, add incoming radiance to pixelcolor
+				r = r + radiance(Ray(cam.orig + d * 40, normalize(d)), &s1, &s2)*(1. / samps) ;
+			}
+			r *= 0.25;
+			output[i] += make_float3(clamp(r.x, 0.0f, 1.0f), clamp(r.y, 0.0f, 1.0f), clamp(r.z, 0.0f, 1.0f));
+		}
+
 }
 
 inline float clamp(float x){ return x < 0.0f ? 0.0f : x > 1.0f ? 1.0f : x; } 
 
-// convert RGB float in range [0,1] to int in range [0, 255] and perform gamma correction
+// convert RGB float in range [0.0, 1.0] to [0, 255] and perform gamma correction
 inline int toInt(float x){ return int(pow(clamp(x), 1 / 2.2) * 255 + .5); } 
 
 void SaveToPPM(float3* output, int w, int h);
 
 int TestSmallPTOnGPU(int width, int height, int samps)
 {
-    float3* output_h = new float3[width * height]; // pointer to memory for image on the host (system RAM)
+    static float3* output_h = new float3[width * height]; // pointer to memory for image on the host (system RAM)
     float3* output_d;    // pointer to memory for image on the device (GPU VRAM)
 
     CUDA_CALL_CHECK( cudaSetDevice(0) );
@@ -259,7 +266,7 @@ int TestSmallPTOnGPU(int width, int height, int samps)
 
 int main(int argc, char *argv[])
 {
-    int width = 1024, height = 1024, samps = 1024;
+    int width = 1024, height = 1024, samps = 128;
     
     if (argc > 1)
     {

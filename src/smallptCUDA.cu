@@ -66,9 +66,9 @@ __device__ static float getrandom(unsigned int *seed0, unsigned int *seed1)
 //! __device__ : executed on the device (GPU) and callable only from the device
 struct Ray
 { 
- float3 orig; //< ray origin
- float3 dir;  //< ray direction 
- __device__ Ray(float3 o_, float3 d_) : orig(o_), dir(d_) {} 
+ float3 o; //< ray origin
+ float3 d;  //< ray direction 
+ __device__ Ray(float3 o_, float3 d_) : o(o_), d(d_) {} 
 };
 
 enum Refl_t { DIFF, SPEC, REFR };  // material types, used in radiance(), only DIFF used here
@@ -89,9 +89,9 @@ struct Sphere
 	// more details in "Realistic Ray Tracing" book by P. Shirley or Scratchapixel.com
 	__device__ float intersect_sphere(const Ray &r) const 
 	{ 
-		float3 op = pos - r.orig;    // distance from ray.orig to center sphere 
-		float t, epsilon = 0.0001f;  // epsilon required to prevent floating point precision artefacts
-		float b = dot(op, r.dir);    // b in quadratic equation
+		float3 op = pos - r.o;    // distance from ray.orig to center sphere 
+		float t, epsilon = 1e-4;  // epsilon required to prevent floating point precision artefacts
+		float b = dot(op, r.d);    // b in quadratic equation
 		float disc = b*b - dot(op, op) + rad*rad;  // discriminant quadratic equation
 		if (disc<0) return 0;       // if disc < 0, no real solution (we're not interested in complex roots) 
 		else disc = sqrtf(disc);    // if disc >= 0, check for solutions using negative and positive discriminant
@@ -110,8 +110,8 @@ __constant__ Sphere spheres[] =
  { 1e5f, { 50.0f, 40.8f, -1e5f + 600.0f }, { 0.0f, 0.0f, 0.0f }, { 1.00f, 1.00f, 1.00f }, DIFF }, //Frnt 
  { 1e5f, { 50.0f, 1e5f, 81.6f }, { 0.0f, 0.0f, 0.0f }, { .75f, .75f, .75f }, DIFF }, //Botm 
  { 1e5f, { 50.0f, -1e5f + 81.6f, 81.6f }, { 0.0f, 0.0f, 0.0f }, { .75f, .75f, .75f }, DIFF }, //Top 
- { 16.5f, { 27.0f, 16.5f, 47.0f }, { 0.0f, 0.0f, 0.0f }, { 1.0f, 1.0f, 1.0f }, DIFF }, // small sphere 1
- { 16.5f, { 73.0f, 16.5f, 78.0f }, { 0.0f, 0.0f, 0.0f }, { 1.0f, 1.0f, 1.0f }, DIFF }, // small sphere 2
+ { 16.5f, { 27.0f, 16.5f, 47.0f }, { 0.0f, 0.0f, 0.0f }, { 1.0f, 1.0f, 1.0f }, SPEC }, // small sphere 1
+ { 16.5f, { 73.0f, 16.5f, 78.0f }, { 0.0f, 0.0f, 0.0f }, { 1.0f, .0f, .0f }, DIFF }, // small sphere 2
  { 600.0f, { 50.0f, 681.6f - .77f, 81.6f }, { 2.0f, 1.8f, 1.6f }, { 0.0f, 0.0f, 0.0f }, DIFF }  // Light
 };
 
@@ -136,7 +136,7 @@ __device__ inline bool intersect_scene(const Ray &r, float &t, int &id)
 __device__ float3 radiance(Ray &r, curandState *randstate)
 { 
 	float3 accucolor = make_float3(0.0f, 0.0f, 0.0f); // accumulates ray colour with each iteration through bounce loop
-	float3 mask = make_float3(1.0f, 1.0f, 1.0f); 
+	float3 cf = make_float3(1.0f, 1.0f, 1.0f); 
 
 	 for (int bounces = 0; bounces < 4; bounces++)
 	 {  
@@ -150,12 +150,12 @@ __device__ float3 radiance(Ray &r, curandState *randstate)
 		}
 
 		const Sphere &obj = spheres[id];  // hitobject
-		float3 x = r.orig + r.dir*t;          // hitpoint 
+		float3 x = r.o+ r.d*t;          // hitpoint 
 		float3 n = normalize(x - obj.pos);    // normal
-		float3 nl = dot(n, r.dir) < 0 ? n : n * -1; // front facing normal
+		float3 nl = dot(n, r.d) < 0 ? n : n * -1; // front facing normal
+		float3 d;
 
-		// add emission of current sphere to accumulated colour(first term in rendering equation sum) 
-		accucolor += mask * obj.emi;
+		accucolor += cf * obj.emi;
 
 		if (obj.refl == DIFF)
 		{
@@ -166,15 +166,23 @@ __device__ float3 radiance(Ray &r, curandState *randstate)
 			float3 w = nl; 
 			float3 u = normalize(cross((fabs(w.x) > .1 ? make_float3(0, 1, 0) : make_float3(1, 0, 0)), w));  
 			float3 v = cross(w,u);
+			d = normalize(u * cos(r1) * r2s + v * sin(r1) * r2s + w * sqrtf(1 - r2));
 
-			float3 d = normalize(u * cos(r1) * r2s + v * sin(r1) * r2s + w * sqrtf(1 - r2));
-			r.orig = x + nl * 0.05f; // offset ray origin slightly to prevent self intersection
-			r.dir = d;
-
-			mask *= obj.col;    // multiply with colour of object       
-			mask *= dot(d,nl);  // weigh light contribution using cosine of angle between incident light and normal
-			mask *= 2;          // fudge factor
+			cf *= obj.col;    // multiply with colour of object       
+			//cf *= dot(d,nl);  // weigh light contribution using cosine of angle between incident light and normal
+			//cf *= 2;          // fudge factor
 		}
+		else if (obj.refl == SPEC)
+		{
+			d = r.d - n * 2 * dot(n, r.d);
+		}
+		else
+		{
+
+		}
+
+		r.o = x + nl * 0.05f; // offset ray origin slightly to prevent self intersection
+		r.d = d;
 	 }
 	 return accucolor;
 }
@@ -196,7 +204,7 @@ __global__ void render_kernel(float3 *output, int width, int height, int samps, 
 
     Ray cam(make_float3(50, 52, 295.6), normalize(make_float3(0, -0.042612, -1)));
     float3 cx = make_float3(width * .5135 / height, 0.0f, 0.0f);
-    float3 cy = normalize(cross(cx, cam.dir)) * .5135;
+    float3 cy = normalize(cross(cx, cam.d)) * .5135;
     float3 r = make_float3(0.0f);
 
 	//// super sampling
@@ -211,10 +219,10 @@ __global__ void render_kernel(float3 *output, int width, int height, int samps, 
 				double r1 = 2 * curand_uniform(&randState), dx = r1 < 1 ? sqrt(r1) - 1 : 1 - sqrt(2 - r1);
 				double r2 = 2 * curand_uniform(&randState), dy = r2 < 1 ? sqrt(r2) - 1 : 1 - sqrt(2 - r2);
 				float3 d = cx * (((sx + .5 + dx) / 2 + x) / width - .5) +
-					cy * (((sy + .5 + dy) / 2 + y) / height - .5) + cam.dir;
+					cy * (((sy + .5 + dy) / 2 + y) / height - .5) + cam.d;
 
 				// create primary ray, add incoming radiance to pixelcolor
-				r = r + radiance(Ray(cam.orig + d * 40, normalize(d)), &randState)*(1. / samps) ;
+				r = r + radiance(Ray(cam.o + d * 140, normalize(d)), &randState)*(1. / samps) ;
 			}
 			output[i] += r * 0.25;
 		}
@@ -250,8 +258,9 @@ int TestSmallPTOnGPU(int width, int height, int samps)
     printf("\nStart rendering... %d, %d, %d\n", width, height, samps);
  
 	uint64_t iterates = 0;
-	int spsp = 16;
+	int spsp = 2;
 
+    auto start = std::chrono::high_resolution_clock::now();
 	for (int i = 0; i < samps / 4 ; ++i, iterates++)
 	{
     // Record start time                          
@@ -264,8 +273,12 @@ int TestSmallPTOnGPU(int width, int height, int samps)
     // Record end time
     auto finish = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> elapsed = finish - start;
-    printf("- [Iterate %4llu] Kernel Done! Time=%3.5lf ms\n", iterates, 1000.f*elapsed.count());
+    printf("\r- [Iterate %4llu] Kernel Done! Time=%3.5lf ms", iterates, 1000.f*elapsed.count());
 	}
+
+    auto finish = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed = finish - start;
+    printf("\n- [Total Time] Render Done! Time=%3.5lf ms", 1000.f*elapsed.count());
 
     // copy results of computation from device back to host
     CUDA_CALL_CHECK(cudaMemcpy(output_h, output_d, width * height * sizeof(float3), cudaMemcpyDeviceToHost));

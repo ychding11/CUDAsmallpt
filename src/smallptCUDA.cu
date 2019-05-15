@@ -71,7 +71,7 @@ struct Ray
  __device__ Ray(float3 o_, float3 d_) : o(o_), d(d_) {} 
 };
 
-enum Refl_t { DIFF, SPEC, REFR };  // material types, used in radiance(), only DIFF used here
+enum Refl_t { DIFF, SPEC, REFR };  // material types, used in radiance()
 
 struct Sphere
 {
@@ -111,7 +111,7 @@ __constant__ Sphere spheres[] =
  { 1e5f, { 50.0f, 1e5f, 81.6f }, { 0.0f, 0.0f, 0.0f }, { .75f, .75f, .75f }, DIFF }, //Botm 
  { 1e5f, { 50.0f, -1e5f + 81.6f, 81.6f }, { 0.0f, 0.0f, 0.0f }, { .75f, .75f, .75f }, DIFF }, //Top 
  { 16.5f, { 27.0f, 16.5f, 47.0f }, { 0.0f, 0.0f, 0.0f }, { 1.0f, 1.0f, 1.0f }, SPEC }, // small sphere 1
- { 16.5f, { 73.0f, 16.5f, 78.0f }, { 0.0f, 0.0f, 0.0f }, { 1.0f, .0f, .0f }, DIFF }, // small sphere 2
+ { 16.5f, { 73.0f, 16.5f, 78.0f }, { 0.0f, 0.0f, 0.0f }, { 1.0f, .0f, .0f }, REFR }, // small sphere 2
  { 600.0f, { 50.0f, 681.6f - .77f, 81.6f }, { 2.0f, 1.8f, 1.6f }, { 0.0f, 0.0f, 0.0f }, DIFF }  // Light
 };
 
@@ -156,6 +156,7 @@ __device__ float3 radiance(Ray &r, curandState *randstate)
 		float3 d;
 
 		accucolor += cf * obj.emi;
+		cf *= obj.col;    // multiply with colour of object       
 
 		if (obj.refl == DIFF)
 		{
@@ -168,7 +169,6 @@ __device__ float3 radiance(Ray &r, curandState *randstate)
 			float3 v = cross(w,u);
 			d = normalize(u * cos(r1) * r2s + v * sin(r1) * r2s + w * sqrtf(1 - r2));
 
-			cf *= obj.col;    // multiply with colour of object       
 			//cf *= dot(d,nl);  // weigh light contribution using cosine of angle between incident light and normal
 			//cf *= 2;          // fudge factor
 		}
@@ -178,7 +178,28 @@ __device__ float3 radiance(Ray &r, curandState *randstate)
 		}
 		else
 		{
+			Ray reflRay(x, r.d - n * 2 * dot(n, r.d));     // Ideal dielectric REFRACTION
+			bool into = dot(n, nl) > 0;                // Ray from outside going in?
+			float nc = 1, nt = 1.3,
+				nnt = into ? nc / nt : nt / nc,
+				ddn = dot(r.d,nl),
+				cos2t;
+			if ((cos2t = 1 - nnt * nnt*(1 - ddn * ddn)) < 0)    // Total internal reflection
+			{
+				d = reflRay.d;
+			}
+			else
+			{
+				float3 tdir = normalize(r.d*nnt - n * ((into ? 1 : -1) * (ddn*nnt + sqrt(cos2t))));
+				float a = nt - nc, b = nt + nc,
+					  R0 = a * a / (b*b),
+					  c = 1 - (into ? -ddn : dot(tdir,n));
+				float Re = R0 + (1 - R0)*c*c*c*c*c, Tr = 1 - Re,
+					  P = .25 + .5*Re, RP = Re / P, TP = Tr / (1 - P);
 
+				//curand_uniform(randstate) < P ? cf *= RP, d = reflRay.d : cf *= TP, d = tdir;
+				cf *= Tr, d = tdir;
+			}
 		}
 
 		r.o = x + nl * 0.05f; // offset ray origin slightly to prevent self intersection
